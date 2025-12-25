@@ -4,6 +4,7 @@
 #include <Ticker.h>
 #include <LittleFS.h>
 #include <Update.h>
+#include <esp_partition.h>
 
 #ifndef ESPASYNCHTTPUPDATESERVER_SerialOutput
     #define ESPASYNCHTTPUPDATESERVER_SerialOutput Serial
@@ -39,6 +40,9 @@
 
 static const char successResponse[] PROGMEM =
     R"(<meta content="15;URL=/"http-equiv=refresh>Update Success! Rebooting...)";
+
+static const char successResponseFS[] PROGMEM =
+    R"(<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="2;url=/"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Update Success</title><style>body{font-family:Arial,sans-serif;background:#222;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;text-align:center}.container{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:40px;border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,0.3)}h1{font-size:32px;margin-bottom:20px}p{font-size:18px;margin-bottom:30px}.spinner{border:4px solid rgba(255,255,255,0.3);border-top:4px solid #fff;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:0 auto}@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style><script>setTimeout(function(){window.location.replace('/');},2000);</script></head><body><div class="container"><h1>✓ Filesystem Update Success!</h1><p>Redirecting to home page...</p><div class="spinner"></div></div></body></html>)";
 
 Ticker restartTimer;
 
@@ -99,10 +103,18 @@ void ESPAsyncHTTPUpdateServer::setup(AsyncWebServer *server, const String &path,
         }
         else
         {
-
-            request->send(200, PSTR("text/html"), successResponse);
-            Log("Rebooting...\n");
-            restartTimer.once_ms(1000,[]{ ESP.restart(); });
+            // Use different success page for filesystem vs firmware
+            if (_updateType == UpdateType::FILE_SYSTEM)
+            {
+                request->send(200, PSTR("text/html"), successResponseFS);
+                Log("Filesystem updated successfully. No reboot needed.\n");
+            }
+            else
+            {
+                request->send(200, PSTR("text/html"), successResponse);
+                Log("Rebooting...\n");
+                restartTimer.once_ms(1000,[]{ ESP.restart(); });
+            }
         } },
         [&](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
         {
@@ -146,7 +158,9 @@ void ESPAsyncHTTPUpdateServer::setup(AsyncWebServer *server, const String &path,
                 {
                     Log("updating filesystem\n");
                     int command = U_SPIFFS;
-                    size_t fsSize = LittleFS.totalBytes();
+                    // Use actual partition size instead of totalBytes() to avoid "Bad Size Given"
+                    const esp_partition_t* fsPartition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+                    size_t fsSize = fsPartition ? fsPartition->size : UPDATE_SIZE_UNKNOWN;
                     if (!Update.begin(fsSize, command))
                     { // start with max available size
 #ifdef ESPASYNCHTTPUPDATESERVER_DEBUG
